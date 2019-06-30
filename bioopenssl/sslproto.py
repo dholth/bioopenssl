@@ -1,20 +1,29 @@
+"""
+Python's asyncio.sslproto but with pyOpenSSL
+"""
+
+from typing import Optional
+
 import collections
 import warnings
-try:
-    import ssl
-except ImportError:  # pragma: no cover
-    ssl = None
 
-from . import base_events
-from . import constants
-from . import protocols
-from . import transports
-from .log import logger
+from OpenSSL import SSL
+
+# try:
+#     from OpenSSL import SSL
+# except ImportError:  # pragma: no cover
+#     SSL = None
+
+from asyncio import base_events  # type: ignore
+from asyncio import constants  # type: ignore
+from asyncio import protocols
+from asyncio import transports
+from asyncio.log import logger
 
 
 def _create_transport_context(server_side, server_hostname):
     if server_side:
-        raise ValueError('Server side SSL needs a valid SSLContext')
+        raise ValueError("Server side SSL needs a valid SSLContext")
 
     # Client side may pass ssl=True to use a default
     # context; in that case the sslcontext passed is None.
@@ -51,7 +60,9 @@ class _SSLPipe(object):
     do_handshake(). To shutdown SSL again, call unwrap().
     """
 
-    max_size = 256 * 1024   # Buffer size passed to read()
+    max_size = 256 * 1024  # Buffer size passed to read()
+
+    _sslobj: Optional[SSL.Connection]
 
     def __init__(self, context, server_side, server_hostname=None):
         """
@@ -68,12 +79,20 @@ class _SSLPipe(object):
         self._server_side = server_side
         self._server_hostname = server_hostname
         self._state = _UNWRAPPED
-        self._incoming = ssl.MemoryBIO()
-        self._outgoing = ssl.MemoryBIO()
+        # self._incoming = self._connection.bio_read
+        # self._outgoing = self._connection.bio_write
         self._sslobj = None
         self._need_ssldata = False
         self._handshake_cb = None
         self._shutdown_cb = None
+
+    @property
+    def _incoming(self):
+        return self._sslobj.bio_write
+
+    @property
+    def _outgoing(self):
+        return self._sslobj.bio_read
 
     @property
     def context(self):
@@ -113,14 +132,17 @@ class _SSLPipe(object):
         called with None if successful, else an exception instance.
         """
         if self._state != _UNWRAPPED:
-            raise RuntimeError('handshake in progress or completed')
-        self._sslobj = self._context.wrap_bio(
-            self._incoming, self._outgoing,
-            server_side=self._server_side,
-            server_hostname=self._server_hostname)
+            raise RuntimeError("handshake in progress or completed")
+        self._sslobj = SSL.Connection(self._context)
+        # self._sslobj = self._context.wrap_bio(
+        #     self._incoming,
+        #     self._outgoing,
+        #     server_side=self._server_side,
+        #     server_hostname=self._server_hostname,
+        # )
         self._state = _DO_HANDSHAKE
         self._handshake_cb = callback
-        ssldata, appdata = self.feed_ssldata(b'', only_handshake=True)
+        ssldata, appdata = self.feed_ssldata(b"", only_handshake=True)
         assert len(appdata) == 0
         return ssldata
 
@@ -134,14 +156,14 @@ class _SSLPipe(object):
         called without arguments.
         """
         if self._state == _UNWRAPPED:
-            raise RuntimeError('no security layer present')
+            raise RuntimeError("no security layer present")
         if self._state == _SHUTDOWN:
-            raise RuntimeError('shutdown in progress')
+            raise RuntimeError("shutdown in progress")
         assert self._state in (_WRAPPED, _DO_HANDSHAKE)
         self._state = _SHUTDOWN
         self._shutdown_cb = callback
-        ssldata, appdata = self.feed_ssldata(b'')
-        assert appdata == [] or appdata == [b'']
+        ssldata, appdata = self.feed_ssldata(b"")
+        assert appdata == [] or appdata == [b""]
         return ssldata
 
     def feed_eof(self):
@@ -151,8 +173,8 @@ class _SSLPipe(object):
         unexpected.
         """
         self._incoming.write_eof()
-        ssldata, appdata = self.feed_ssldata(b'')
-        assert appdata == [] or appdata == [b'']
+        ssldata, appdata = self.feed_ssldata(b"")
+        assert appdata == [] or appdata == [b""]
 
     def feed_ssldata(self, data, only_handshake=False):
         """Feed SSL record level data into the pipe.
@@ -213,15 +235,13 @@ class _SSLPipe(object):
             elif self._state == _UNWRAPPED:
                 # Drain possible plaintext data after close_notify.
                 appdata.append(self._incoming.read())
-        except (ssl.SSLError, ssl.CertificateError) as exc:
-            exc_errno = getattr(exc, 'errno', None)
-            if exc_errno not in (
-                    ssl.SSL_ERROR_WANT_READ, ssl.SSL_ERROR_WANT_WRITE,
-                    ssl.SSL_ERROR_SYSCALL):
-                if self._state == _DO_HANDSHAKE and self._handshake_cb:
-                    self._handshake_cb(exc)
-                raise
-            self._need_ssldata = (exc_errno == ssl.SSL_ERROR_WANT_READ)
+        except (SSL.WantReadError, SSL.WantWriteError, SSL.SysCallError) as exc:
+            self._need_ssldata = isinstance(exc, SSL.WantReadError)
+        except (SSL.Error) as exc:
+            exc_errno = getattr(exc, "errno", None)
+            if self._state == _DO_HANDSHAKE and self._handshake_cb:
+                self._handshake_cb(exc)
+            raise
 
         # Check for record level data that needs to be sent back.
         # Happens for the initial handshake and renegotiations.
@@ -260,18 +280,17 @@ class _SSLPipe(object):
             try:
                 if offset < len(view):
                     offset += self._sslobj.write(view[offset:])
-            except ssl.SSLError as exc:
+            except (SSL.WantReadError, SSL.WantWriteError, SSL.SysCallError) as exc:
+                self._need_ssldata = isinstance(exc, SSL.WantReadError)
+            except SSL.Error as exc:
                 # It is not allowed to call write() after unwrap() until the
                 # close_notify is acknowledged. We return the condition to the
                 # caller as a short write.
-                exc_errno = getattr(exc, 'errno', None)
-                if exc.reason == 'PROTOCOL_IS_SHUTDOWN':
-                    exc_errno = exc.errno = ssl.SSL_ERROR_WANT_READ
-                if exc_errno not in (ssl.SSL_ERROR_WANT_READ,
-                                     ssl.SSL_ERROR_WANT_WRITE,
-                                     ssl.SSL_ERROR_SYSCALL):
-                    raise
-                self._need_ssldata = (exc_errno == ssl.SSL_ERROR_WANT_READ)
+                exc_errno = getattr(exc, "errno", None)
+                # TODO
+                # if exc.reason == "PROTOCOL_IS_SHUTDOWN":
+                # exc_errno = exc.errno = ssl.SSL_ERROR_WANT_READ
+                raise
 
             # See if there's any record level data back for us.
             if self._outgoing.pending:
@@ -281,12 +300,13 @@ class _SSLPipe(object):
         return (ssldata, offset)
 
 
-class _SSLProtocolTransport(transports._FlowControlMixin,
-                            transports.Transport):
+class _SSLProtocolTransport(
+    transports._FlowControlMixin, transports.Transport  # type: ignore
+):
 
     _sendfile_compatible = constants._SendfileMode.FALLBACK
 
-    def __init__(self, loop, ssl_protocol):
+    def __init__(self, loop, ssl_protocol: SSLProtocol):
         self._loop = loop
         # SSLProtocol instance
         self._ssl_protocol = ssl_protocol
@@ -318,14 +338,13 @@ class _SSLProtocolTransport(transports._FlowControlMixin,
 
     def __del__(self):
         if not self._closed:
-            warnings.warn(f"unclosed transport {self!r}", ResourceWarning,
-                          source=self)
+            warnings.warn(f"unclosed transport {self!r}", ResourceWarning, source=self)
             self.close()
 
     def is_reading(self):
         tr = self._ssl_protocol._transport
         if tr is None:
-            raise RuntimeError('SSL transport has not been initialized yet')
+            raise RuntimeError("SSL transport has not been initialized yet")
         return tr.is_reading()
 
     def pause_reading(self):
@@ -381,8 +400,9 @@ class _SSLProtocolTransport(transports._FlowControlMixin,
         to be sent out asynchronously.
         """
         if not isinstance(data, (bytes, bytearray, memoryview)):
-            raise TypeError(f"data: expecting a bytes-like instance, "
-                            f"got {type(data).__name__}")
+            raise TypeError(
+                f"data: expecting a bytes-like instance, " f"got {type(data).__name__}"
+            )
         if not data:
             return
         self._ssl_protocol._write_appdata(data)
@@ -409,23 +429,32 @@ class SSLProtocol(protocols.Protocol):
     buffers which are ssl.MemoryBIO objects.
     """
 
-    def __init__(self, loop, app_protocol, sslcontext, waiter,
-                 server_side=False, server_hostname=None,
-                 call_connection_made=True,
-                 ssl_handshake_timeout=None):
-        if ssl is None:
-            raise RuntimeError('stdlib ssl module not available')
+    _sslpipe: Optional[_SSLPipe]
+
+    def __init__(
+        self,
+        loop,
+        app_protocol,
+        sslcontext,
+        waiter,
+        server_side=False,
+        server_hostname=None,
+        call_connection_made=True,
+        ssl_handshake_timeout=None,
+    ):
+        if SSL is None:
+            raise RuntimeError("stdlib ssl module not available")
 
         if ssl_handshake_timeout is None:
             ssl_handshake_timeout = constants.SSL_HANDSHAKE_TIMEOUT
         elif ssl_handshake_timeout <= 0:
             raise ValueError(
                 f"ssl_handshake_timeout should be a positive number, "
-                f"got {ssl_handshake_timeout}")
+                f"got {ssl_handshake_timeout}"
+            )
 
         if not sslcontext:
-            sslcontext = _create_transport_context(
-                server_side, server_hostname)
+            sslcontext = _create_transport_context(server_side, server_hostname)
 
         self._server_side = server_side
         if server_hostname and not server_side:
@@ -457,8 +486,9 @@ class SSLProtocol(protocols.Protocol):
 
     def _set_app_protocol(self, app_protocol):
         self._app_protocol = app_protocol
-        self._app_protocol_is_buffer = \
-            isinstance(app_protocol, protocols.BufferedProtocol)
+        self._app_protocol_is_buffer = isinstance(
+            app_protocol, protocols.BufferedProtocol
+        )
 
     def _wakeup_waiter(self, exc=None):
         if self._waiter is None:
@@ -476,9 +506,9 @@ class SSLProtocol(protocols.Protocol):
         Start the SSL handshake.
         """
         self._transport = transport
-        self._sslpipe = _SSLPipe(self._sslcontext,
-                                 self._server_side,
-                                 self._server_hostname)
+        self._sslpipe = _SSLPipe(
+            self._sslcontext, self._server_side, self._server_hostname
+        )
         self._start_handshake()
 
     def connection_lost(self, exc):
@@ -525,7 +555,7 @@ class SSLProtocol(protocols.Protocol):
         try:
             ssldata, appdata = self._sslpipe.feed_ssldata(data)
         except Exception as e:
-            self._fatal_error(e, 'SSL error in data received')
+            self._fatal_error(e, "SSL error in data received")
             return
 
         for chunk in ssldata:
@@ -536,12 +566,14 @@ class SSLProtocol(protocols.Protocol):
                 try:
                     if self._app_protocol_is_buffer:
                         protocols._feed_data_to_buffered_proto(
-                            self._app_protocol, chunk)
+                            self._app_protocol, chunk
+                        )
                     else:
                         self._app_protocol.data_received(chunk)
                 except Exception as ex:
                     self._fatal_error(
-                        ex, 'application protocol failed to receive SSL data')
+                        ex, "application protocol failed to receive SSL data"
+                    )
                     return
             else:
                 self._start_shutdown()
@@ -564,8 +596,10 @@ class SSLProtocol(protocols.Protocol):
             if not self._in_handshake:
                 keep_open = self._app_protocol.eof_received()
                 if keep_open:
-                    logger.warning('returning true from eof_received() '
-                                   'has no effect when using ssl')
+                    logger.warning(
+                        "returning true from eof_received() "
+                        "has no effect when using ssl"
+                    )
         finally:
             self._transport.close()
 
@@ -584,7 +618,7 @@ class SSLProtocol(protocols.Protocol):
             self._abort()
         else:
             self._in_shutdown = True
-            self._write_appdata(b'')
+            self._write_appdata(b"")
 
     def _write_appdata(self, data):
         self._write_backlog.append((data, 0))
@@ -600,10 +634,10 @@ class SSLProtocol(protocols.Protocol):
         self._in_handshake = True
         # (b'', 1) is a special value in _process_write_backlog() to do
         # the SSL handshake
-        self._write_backlog.append((b'', 1))
-        self._handshake_timeout_handle = \
-            self._loop.call_later(self._ssl_handshake_timeout,
-                                  self._check_handshake_timeout)
+        self._write_backlog.append((b"", 1))
+        self._handshake_timeout_handle = self._loop.call_later(
+            self._ssl_handshake_timeout, self._check_handshake_timeout
+        )
         self._process_write_backlog()
 
     def _check_handshake_timeout(self):
@@ -625,11 +659,11 @@ class SSLProtocol(protocols.Protocol):
                 raise handshake_exc
 
             peercert = sslobj.getpeercert()
-        except Exception as exc:
-            if isinstance(exc, ssl.CertificateError):
-                msg = 'SSL handshake failed on verifying the certificate'
+        except Exception as exc:  # TODO be more specific?
+            if False:  # TODO isinstance(exc, ssl.CertificateError):
+                msg = "SSL handshake failed on verifying the certificate"
             else:
-                msg = 'SSL handshake failed'
+                msg = "SSL handshake failed"
             self._fatal_error(exc, msg)
             return
 
@@ -638,11 +672,12 @@ class SSLProtocol(protocols.Protocol):
             logger.debug("%r: SSL handshake took %.1f ms", self, dt * 1e3)
 
         # Add extra info that becomes available after handshake.
-        self._extra.update(peercert=peercert,
-                           cipher=sslobj.cipher(),
-                           compression=sslobj.compression(),
-                           ssl_object=sslobj,
-                           )
+        self._extra.update(
+            peercert=peercert,
+            cipher=sslobj.cipher(),
+            compression=sslobj.compression(),
+            ssl_object=sslobj,
+        )
         if self._call_connection_made:
             self._app_protocol.connection_made(self._app_transport)
         self._wakeup_waiter()
@@ -665,8 +700,7 @@ class SSLProtocol(protocols.Protocol):
                 if data:
                     ssldata, offset = self._sslpipe.feed_appdata(data, offset)
                 elif offset:
-                    ssldata = self._sslpipe.do_handshake(
-                        self._on_handshake_complete)
+                    ssldata = self._sslpipe.do_handshake(self._on_handshake_complete)
                     offset = 1
                 else:
                     ssldata = self._sslpipe.shutdown(self._finalize)
@@ -693,19 +727,21 @@ class SSLProtocol(protocols.Protocol):
                 # Exceptions will be re-raised in _on_handshake_complete.
                 self._on_handshake_complete(exc)
             else:
-                self._fatal_error(exc, 'Fatal error on SSL transport')
+                self._fatal_error(exc, "Fatal error on SSL transport")
 
-    def _fatal_error(self, exc, message='Fatal error on transport'):
+    def _fatal_error(self, exc, message="Fatal error on transport"):
         if isinstance(exc, base_events._FATAL_ERROR_IGNORE):
             if self._loop.get_debug():
                 logger.debug("%r: %s", self, message, exc_info=True)
         else:
-            self._loop.call_exception_handler({
-                'message': message,
-                'exception': exc,
-                'transport': self._transport,
-                'protocol': self,
-            })
+            self._loop.call_exception_handler(
+                {
+                    "message": message,
+                    "exception": exc,
+                    "transport": self._transport,
+                    "protocol": self,
+                }
+            )
         if self._transport:
             self._transport._force_close(exc)
 
