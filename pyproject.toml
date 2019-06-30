@@ -1,0 +1,21 @@
+[build-system]
+requires = ["pytoml>=0.1", "scons", "enscons>=0.12.0"]
+build-backend = "enscons.api"
+
+[tool.enscons]
+name="bioopenssl"
+version="0.0.1"
+packages=["bioopenssl"]
+install_requires=["pyOpenSSL"]
+description="AsyncIO OpenSSL BIO"
+description_file="README.rst"
+license="MIT"
+classifiers=[
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.7",
+  "Programming Language :: Python :: 3.8",
+]
+keywords=[]
+author="Daniel Holth"
+author_email="dholth@gmail.com"
+url="https://bitbucket.org/dholth/bioopenssl"
