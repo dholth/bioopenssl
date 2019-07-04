@@ -9,11 +9,6 @@ import warnings
 
 from OpenSSL import SSL
 
-# try:
-#     from OpenSSL import SSL
-# except ImportError:  # pragma: no cover
-#     SSL = None
-
 from asyncio import base_events  # type: ignore
 from asyncio import constants  # type: ignore
 from asyncio import protocols
@@ -134,6 +129,10 @@ class _SSLPipe(object):
         if self._state != _UNWRAPPED:
             raise RuntimeError("handshake in progress or completed")
         self._sslobj = SSL.Connection(self._context)
+        if self._server_side:
+            self._sslobj.set_accept_state()
+        else:
+            self._sslobj.set_connect_state()
         # self._sslobj = self._context.wrap_bio(
         #     self._incoming,
         #     self._outgoing,
@@ -245,8 +244,10 @@ class _SSLPipe(object):
 
         # Check for record level data that needs to be sent back.
         # Happens for the initial handshake and renegotiations.
-        if self._outgoing.pending:
-            ssldata.append(self._outgoing.read())
+        pending = self._sslobj.pending()
+        if pending:
+            # XXX use self.max_size?
+            ssldata.append(self._sslobj.bio_read(pending))
         return (ssldata, appdata)
 
     def feed_appdata(self, data, offset=0):
@@ -306,7 +307,7 @@ class _SSLProtocolTransport(
 
     _sendfile_compatible = constants._SendfileMode.FALLBACK
 
-    def __init__(self, loop, ssl_protocol: SSLProtocol):
+    def __init__(self, loop, ssl_protocol: "SSLProtocol"):
         self._loop = loop
         # SSLProtocol instance
         self._ssl_protocol = ssl_protocol
