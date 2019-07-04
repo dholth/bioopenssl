@@ -24,7 +24,7 @@ def _create_transport_context(server_side, server_hostname):
     # context; in that case the sslcontext passed is None.
     # The default is secure for client connections.
     # Python 3.4+: use up-to-date strong settings.
-    sslcontext = ssl.create_default_context()
+    sslcontext = SSL.Context(SSL.TLSv1_2_METHOD)
     if not server_hostname:
         sslcontext.check_hostname = False
     return sslcontext
@@ -758,3 +758,95 @@ class SSLProtocol(protocols.Protocol):
                 self._transport.abort()
         finally:
             self._finalize()
+
+
+from asyncio import events, StreamReader, StreamWriter, StreamReaderProtocol
+
+_DEFAULT_LIMIT = 2 ** 16  # 64 KiB
+
+
+class SelectorEvents:
+    def _make_ssl_transport(
+        self,
+        rawsock,
+        protocol,
+        sslcontext,
+        waiter=None,
+        *,
+        server_side=False,
+        server_hostname=None,
+        extra=None,
+        server=None,
+        ssl_handshake_timeout=constants.SSL_HANDSHAKE_TIMEOUT,
+    ):
+        ssl_protocol = SSLProtocol(
+            self,
+            protocol,
+            sslcontext,
+            waiter,
+            server_side,
+            server_hostname,
+            ssl_handshake_timeout=ssl_handshake_timeout,
+        )
+        _SelectorSocketTransport(
+            self, rawsock, ssl_protocol, extra=extra, server=server
+        )
+        return ssl_protocol._app_transport
+
+
+async def create_ssl_connection(
+    loop: base_events.BaseEventLoop,
+    protocol,
+    host=None,
+    port=None,
+    ssl=None,
+    waiter=None,
+    ssl_handshake_timeout=None,
+    server_side=False,
+    server_hostname=None,
+    **kwds,
+):
+    transport, _ = await loop.create_connection(protocol, host, port, **kwds)
+
+    ssl_protocol = SSLProtocol(
+        loop,
+        protocol,
+        ssl,
+        waiter,
+        server_side,
+        server_hostname,
+        ssl_handshake_timeout=ssl_handshake_timeout,
+    )
+    return ssl_protocol._app_transport
+
+
+async def open_connection(
+    host=None, port=None, *, loop=None, limit=_DEFAULT_LIMIT, ssl=None, **kwds
+):
+    """A wrapper for create_connection() returning a (reader, writer) pair.
+
+    The reader returned is a StreamReader instance; the writer is a
+    StreamWriter instance.
+
+    The arguments are all the usual arguments to create_connection()
+    except protocol_factory; most common are positional host and port,
+    with various optional keyword arguments following.
+
+    Additional optional keyword arguments are loop (to set the event loop
+    instance to use) and limit (to set the buffer limit passed to the
+    StreamReader).
+
+    (If you want to customize the StreamReader and/or
+    StreamReaderProtocol classes, just copy the code -- there's
+    really nothing special here except some convenience.)
+    """
+    print("open_connection")
+    if loop is None:
+        loop = events.get_event_loop()
+    reader = StreamReader(limit=limit, loop=loop)
+    protocol = StreamReaderProtocol(reader, loop=loop)
+    transport = await create_ssl_connection(
+        loop, lambda: protocol, host, port, ssl=ssl, **kwds
+    )
+    writer = StreamWriter(transport, protocol, reader, loop)
+    return reader, writer
