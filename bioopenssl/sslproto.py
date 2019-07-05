@@ -765,7 +765,14 @@ from asyncio import events, StreamReader, StreamWriter, StreamReaderProtocol
 
 
 async def open_connection(
-    host=None, port=None, *, loop=None, limit=_DEFAULT_LIMIT, ssl=None, **kwds
+    host=None,
+    port=None,
+    *,
+    loop=None,
+    limit=_DEFAULT_LIMIT,
+    ssl=None,
+    server_hostname=None,
+    **kwds,
 ):
     """A wrapper for create_connection() returning a (reader, writer) pair.
 
@@ -789,9 +796,16 @@ async def open_connection(
 
     reader = StreamReader(limit=_DEFAULT_LIMIT, loop=loop)
     app_protocol = StreamReaderProtocol(reader, loop=loop)
-    protocol = SSLProtocol(loop, app_protocol, ssl, None)
+    waiter = loop.create_future()
+    protocol = SSLProtocol(
+        loop, app_protocol, ssl, waiter, server_hostname=server_hostname
+    )
     transport, protocol = await loop.create_connection(lambda: protocol, host, port)
-    writer = StreamWriter(transport, protocol, reader, loop)
+
+    await waiter
+
+    writer = StreamWriter(protocol._app_transport, protocol, reader, loop)
+
     return reader, writer
 
 
