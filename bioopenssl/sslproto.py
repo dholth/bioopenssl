@@ -36,6 +36,8 @@ _DO_HANDSHAKE = "DO_HANDSHAKE"
 _WRAPPED = "WRAPPED"
 _SHUTDOWN = "SHUTDOWN"
 
+_DEFAULT_LIMIT = 2 ** 16  # 64 KiB
+
 
 class _SSLPipe(object):
     """An SSL "Pipe".
@@ -237,10 +239,11 @@ class _SSLPipe(object):
 
         # Check for record level data that needs to be sent back.
         # Happens for the initial handshake and renegotiations.
-        pending = self._sslobj.pending()
-        if pending:
-            # XXX use self.max_size?
-            ssldata.append(self._sslobj.bio_read(pending))
+        try:
+            while True:
+                ssldata.append(self._sslobj.bio_read(_DEFAULT_LIMIT))
+        except SSL.WantReadError:
+            pass
         return (ssldata, appdata)
 
     def feed_appdata(self, data, offset=0):
@@ -287,10 +290,11 @@ class _SSLPipe(object):
                 raise
 
             # See if there's any record level data back for us.
-            pending = self._sslobj.pending()
-            if pending:
+            try:
                 # XXX use self.max_size?
-                ssldata.append(self._sslobj.bio_read(pending))
+                ssldata.append(self._sslobj.bio_read(_DEFAULT_LIMIT))
+            except SSL.WantReadError:
+                pass
             if offset == len(view) or self._need_ssldata:
                 break
         return (ssldata, offset)
@@ -545,7 +549,7 @@ class SSLProtocol(protocols.Protocol):
 
         The argument is a bytes object.
         """
-        logger.debug("data %s", data.decode("charmap"))
+        logger.debug("data %d", len(data))
         if self._sslpipe is None:
             # transport closing, sslpipe is destroyed
             return
@@ -758,8 +762,6 @@ class SSLProtocol(protocols.Protocol):
 
 
 from asyncio import events, StreamReader, StreamWriter, StreamReaderProtocol
-
-_DEFAULT_LIMIT = 2 ** 16  # 64 KiB
 
 
 async def open_connection(
