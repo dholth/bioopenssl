@@ -55,7 +55,7 @@ class SslProtoHandshakeTests(test_utils.TestCase):
                 return []
 
             sslpipe.do_handshake.side_effect = mock_handshake
-        with mock.patch("asyncio.sslproto._SSLPipe", return_value=sslpipe):
+        with mock.patch("bioopenssl.sslproto._SSLPipe", return_value=sslpipe):
             ssl_proto.connection_made(transport)
         return transport
 
@@ -267,7 +267,7 @@ class BaseStartTLS(func_tests.FunctionalTestCaseMixin):
             )
 
             tr.write(HELLO_MSG)
-            new_tr = await self.loop.start_tls(tr, proto, client_context)
+            new_tr = await sslproto.start_tls(self.loop, tr, proto, client_context)
 
             self.assertEqual(await on_data, b"O")
             new_tr.write(HELLO_MSG)
@@ -346,7 +346,7 @@ class BaseStartTLS(func_tests.FunctionalTestCaseMixin):
     def test_start_tls_client_buf_proto_1(self):
         HELLO_MSG = b"1" * self.PAYLOAD_SIZE
 
-        server_context = test_utils.simple_server_sslcontext()
+        server_context = test_utils.simple_server_sslcontext_stdlib()
         client_context = test_utils.simple_client_sslcontext()
         client_con_made_calls = 0
 
@@ -413,7 +413,7 @@ class BaseStartTLS(func_tests.FunctionalTestCaseMixin):
             )
 
             tr.write(HELLO_MSG)
-            new_tr = await self.loop.start_tls(tr, proto, client_context)
+            new_tr = await sslproto.start_tls(self.loop, tr, proto, client_context)
 
             self.assertEqual(await on_data1, b"O")
             new_tr.write(HELLO_MSG)

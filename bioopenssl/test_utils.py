@@ -1,6 +1,7 @@
 from test.test_asyncio.utils import *
 
 from OpenSSL import SSL
+import ssl
 
 
 def verify_cb(conn, cert, errnum, depth, ok):
@@ -27,3 +28,26 @@ def simple_client_sslcontext(*, disable_verify=True):
 
 def dummy_ssl_context():
     return SSL.Context(SSL.TLSv1_2_METHOD)
+
+
+def simple_server_sslcontext_stdlib():
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(ONLYCERT, ONLYKEY)
+    server_context.check_hostname = False
+    server_context.verify_mode = ssl.CERT_NONE
+    return server_context
+
+
+def simple_client_sslcontext_stdlib(*, disable_verify=True):
+    client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    client_context.check_hostname = False
+    if disable_verify:
+        client_context.verify_mode = ssl.CERT_NONE
+    return client_context
+
+
+def dummy_ssl_context_stdlib():
+    if ssl is None:
+        return None
+    else:
+        return ssl.SSLContext(ssl.PROTOCOL_TLS)

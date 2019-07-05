@@ -20,7 +20,7 @@ class FunctionalTestCaseMixin:
 
     def loop_exception_handler(self, loop, context):
         self.__unhandled_exceptions.append(context)
-        self.loop.default_exception_handler(context)
+        loop.default_exception_handler(context)  # upstream bug self.loop
 
     def setUp(self):
         self.loop = self.new_loop()
@@ -129,6 +129,8 @@ class FunctionalTestCaseMixin:
 
 
 class TestSocketWrapper:
+    # using stdlib ssl
+
     def __init__(self, sock):
         self.__sock = sock
 
@@ -141,15 +143,15 @@ class TestSocketWrapper:
             buf += data
         return buf
 
-    def start_tls(
-        self, ssl_context: SSL.Context, *, server_side=False, server_hostname=None
-    ):
+    def start_tls(self, ssl_context, *, server_side=False, server_hostname=None):
 
-        ssl_sock = SSL.Connection(ssl_context, self.__sock)
-        if server_side:
-            ssl_sock.set_accept_state()
-        else:
-            ssl_sock.set_connect_state()
+        # todo equivalent of wrap_socket for pyOpenSSL
+        ssl_sock = ssl_context.wrap_socket(
+            self.__sock,
+            server_side=server_side,
+            server_hostname=server_hostname,
+            do_handshake_on_connect=False,
+        )
 
         try:
             ssl_sock.do_handshake()

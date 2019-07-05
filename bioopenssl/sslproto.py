@@ -74,8 +74,6 @@ class _SSLPipe(object):
         self._server_side = server_side
         self._server_hostname = server_hostname
         self._state = _UNWRAPPED
-        # self._incoming = self._connection.bio_read
-        # self._outgoing = self._connection.bio_write
         self._sslobj = None
         self._need_ssldata = False
         self._handshake_cb = None
@@ -133,12 +131,6 @@ class _SSLPipe(object):
             self._sslobj.set_accept_state()
         else:
             self._sslobj.set_connect_state()
-        # self._sslobj = self._context.wrap_bio(
-        #     self._incoming,
-        #     self._outgoing,
-        #     server_side=self._server_side,
-        #     server_hostname=self._server_hostname,
-        # )
         self._state = _DO_HANDSHAKE
         self._handshake_cb = callback
         ssldata, appdata = self.feed_ssldata(b"", only_handshake=True)
@@ -171,7 +163,7 @@ class _SSLPipe(object):
         This method will raise an SSL_ERROR_EOF exception if the EOF is
         unexpected.
         """
-        self._incoming.write_eof()
+        self._sslobj.bio_shutdown()  # TODO
         ssldata, appdata = self.feed_ssldata(b"")
         assert appdata == [] or appdata == [b""]
 
@@ -200,11 +192,12 @@ class _SSLPipe(object):
 
         self._need_ssldata = False
         if data:
-            self._incoming.write(data)
+            self._incoming(data)
 
         ssldata = []
         appdata = []
         try:
+            logger.debug(self._state)
             if self._state == _DO_HANDSHAKE:
                 # Call do_handshake() until it doesn't raise anymore.
                 self._sslobj.do_handshake()
@@ -508,6 +501,7 @@ class SSLProtocol(protocols.Protocol):
 
         Start the SSL handshake.
         """
+        logger.debug("connection_made")
         self._transport = transport
         self._sslpipe = _SSLPipe(
             self._sslcontext, self._server_side, self._server_hostname
@@ -551,6 +545,7 @@ class SSLProtocol(protocols.Protocol):
 
         The argument is a bytes object.
         """
+        logger.debug("data %s", data.decode("charmap"))
         if self._sslpipe is None:
             # transport closing, sslpipe is destroyed
             return
@@ -767,62 +762,6 @@ from asyncio import events, StreamReader, StreamWriter, StreamReaderProtocol
 _DEFAULT_LIMIT = 2 ** 16  # 64 KiB
 
 
-class SelectorEvents:
-    def _make_ssl_transport(
-        self,
-        rawsock,
-        protocol,
-        sslcontext,
-        waiter=None,
-        *,
-        server_side=False,
-        server_hostname=None,
-        extra=None,
-        server=None,
-        ssl_handshake_timeout=constants.SSL_HANDSHAKE_TIMEOUT,
-    ):
-        ssl_protocol = SSLProtocol(
-            self,
-            protocol,
-            sslcontext,
-            waiter,
-            server_side,
-            server_hostname,
-            ssl_handshake_timeout=ssl_handshake_timeout,
-        )
-        _SelectorSocketTransport(
-            self, rawsock, ssl_protocol, extra=extra, server=server
-        )
-        return ssl_protocol._app_transport
-
-
-async def create_ssl_connection(
-    loop: base_events.BaseEventLoop,
-    protocol,
-    host=None,
-    port=None,
-    ssl=None,
-    waiter=None,
-    ssl_handshake_timeout=None,
-    server_side=False,
-    server_hostname=None,
-    **kwds,
-):
-    ssl_protocol = SSLProtocol(
-        loop,
-        protocol,
-        ssl,
-        waiter,
-        server_side,
-        server_hostname,
-        ssl_handshake_timeout=ssl_handshake_timeout,
-    )
-    transport, _ = await loop.create_connection(
-        lambda: ssl_protocol, host, port, **kwds
-    )
-    return ssl_protocol._app_transport
-
-
 async def open_connection(
     host=None, port=None, *, loop=None, limit=_DEFAULT_LIMIT, ssl=None, **kwds
 ):
@@ -845,10 +784,71 @@ async def open_connection(
     """
     if loop is None:
         loop = events.get_event_loop()
-    reader = StreamReader(limit=limit, loop=loop)
-    protocol = StreamReaderProtocol(reader, loop=loop)
-    transport = await create_ssl_connection(
-        loop, lambda: protocol, host, port, ssl=ssl, **kwds
-    )
+
+    reader = StreamReader(limit=_DEFAULT_LIMIT, loop=loop)
+    app_protocol = StreamReaderProtocol(reader, loop=loop)
+    protocol = SSLProtocol(loop, app_protocol, ssl, None)
+    transport, protocol = await loop.create_connection(lambda: protocol, host, port)
     writer = StreamWriter(transport, protocol, reader, loop)
     return reader, writer
+
+
+# from base_events
+async def start_tls(
+    loop,
+    transport,
+    protocol,
+    sslcontext,
+    *,
+    server_side=False,
+    server_hostname=None,
+    ssl_handshake_timeout=None,
+):
+    """Upgrade transport to TLS.
+
+    Return a new transport that *protocol* should start using
+    immediately.
+    """
+
+    if not isinstance(sslcontext, SSL.Context):
+        raise TypeError(
+            f"sslcontext is expected to be an instance of SSL.Context, "
+            f"got {sslcontext!r}"
+        )
+
+    if not getattr(transport, "_start_tls_compatible", False):
+        raise TypeError(f"transport {transport!r} is not supported by start_tls()")
+
+    waiter = loop.create_future()
+    ssl_protocol = SSLProtocol(
+        loop,
+        protocol,
+        sslcontext,
+        waiter,
+        server_side,
+        server_hostname,
+        ssl_handshake_timeout=ssl_handshake_timeout,
+        call_connection_made=False,
+    )
+
+    # Pause early so that "ssl_protocol.data_received()" doesn't
+    # have a chance to get called before "ssl_protocol.connection_made()".
+    transport.pause_reading()
+
+    transport.set_protocol(ssl_protocol)
+    conmade_cb = loop.call_soon(ssl_protocol.connection_made, transport)
+    resume_cb = loop.call_soon(transport.resume_reading)
+
+    try:
+        await waiter
+    except Exception:
+        transport.close()
+        conmade_cb.cancel()
+        resume_cb.cancel()
+        raise
+
+    return ssl_protocol._app_transport
+
+
+# TODO
+# set_tlsext_host_name(server_hostname.encode("IDNA"))
