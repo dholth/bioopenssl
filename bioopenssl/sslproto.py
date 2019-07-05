@@ -660,7 +660,7 @@ class SSLProtocol(protocols.Protocol):
             if handshake_exc is not None:
                 raise handshake_exc
 
-            peercert = sslobj.getpeercert()
+            peercert = sslobj.get_peer_certificate()
         except Exception as exc:  # TODO be more specific?
             if False:  # TODO isinstance(exc, ssl.CertificateError):
                 msg = "SSL handshake failed on verifying the certificate"
@@ -676,8 +676,8 @@ class SSLProtocol(protocols.Protocol):
         # Add extra info that becomes available after handshake.
         self._extra.update(
             peercert=peercert,
-            cipher=sslobj.cipher(),
-            compression=sslobj.compression(),
+            cipher=sslobj.get_cipher_name(),
+            # compression= # TODO
             ssl_object=sslobj,
         )
         if self._call_connection_made:

@@ -20,7 +20,6 @@ from asyncio import tasks
 from . import test_utils
 from . import functional as func_tests
 
-
 def tearDownModule():
     asyncio.set_event_loop_policy(None)
 
