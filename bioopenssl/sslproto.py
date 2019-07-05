@@ -294,8 +294,10 @@ class _SSLPipe(object):
                 raise
 
             # See if there's any record level data back for us.
-            if self._outgoing.pending:
-                ssldata.append(self._outgoing.read())
+            pending = self._sslobj.pending()
+            if pending:
+                # XXX use self.max_size?
+                ssldata.append(self._sslobj.bio_read(pending))
             if offset == len(view) or self._need_ssldata:
                 break
         return (ssldata, offset)
@@ -806,8 +808,6 @@ async def create_ssl_connection(
     server_hostname=None,
     **kwds,
 ):
-    transport, _ = await loop.create_connection(protocol, host, port, **kwds)
-
     ssl_protocol = SSLProtocol(
         loop,
         protocol,
@@ -816,6 +816,9 @@ async def create_ssl_connection(
         server_side,
         server_hostname,
         ssl_handshake_timeout=ssl_handshake_timeout,
+    )
+    transport, _ = await loop.create_connection(
+        lambda: ssl_protocol, host, port, **kwds
     )
     return ssl_protocol._app_transport
 
@@ -840,7 +843,6 @@ async def open_connection(
     StreamReaderProtocol classes, just copy the code -- there's
     really nothing special here except some convenience.)
     """
-    print("open_connection")
     if loop is None:
         loop = events.get_event_loop()
     reader = StreamReader(limit=limit, loop=loop)
