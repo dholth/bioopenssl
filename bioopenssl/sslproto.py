@@ -811,11 +811,11 @@ async def open_connection(
 
 # from base_events
 async def start_tls(
-    loop,
     transport,
     protocol,
     sslcontext,
     *,
+    loop=None,
     server_side=False,
     server_hostname=None,
     ssl_handshake_timeout=None,
@@ -825,6 +825,8 @@ async def start_tls(
     Return a new transport that *protocol* should start using
     immediately.
     """
+    if loop is None:
+        loop = events.get_event_loop()
 
     if not isinstance(sslcontext, SSL.Context):
         raise TypeError(
