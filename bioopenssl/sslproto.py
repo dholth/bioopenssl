@@ -868,5 +868,27 @@ async def start_tls(
     return ssl_protocol._app_transport
 
 
+async def start_server(
+    client_connected_cb,
+    host=None,
+    port=None,
+    *,
+    loop=None,
+    limit=_DEFAULT_LIMIT,
+    ssl: SSL.Context = None,
+    **kwds,
+):
+    if loop is None:
+        loop = events.get_event_loop()
+
+    def ssl_factory():
+        reader = StreamReader(limit=_DEFAULT_LIMIT, loop=loop)
+        app_protocol = StreamReaderProtocol(reader, client_connected_cb, loop=loop)
+        protocol = SSLProtocol(loop, app_protocol, ssl, None, server_side=True)
+        return protocol
+
+    return await loop.create_server(ssl_factory, host, port)
+
+
 # TODO
 # set_tlsext_host_name(server_hostname.encode("IDNA"))
