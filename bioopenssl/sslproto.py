@@ -220,8 +220,8 @@ class _SSLPipe(object):
 
             elif self._state == _SHUTDOWN:
                 # Call shutdown() until it doesn't raise anymore.
-                self._sslobj.unwrap()
-                self._sslobj = None
+                self._sslobj.shutdown()
+                # self._sslobj = None   # _sslobj owns the bio's
                 self._state = _UNWRAPPED
                 if self._shutdown_cb:
                     self._shutdown_cb()
